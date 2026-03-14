@@ -1,12 +1,22 @@
 import streamlit as st
 
-st.set_page_config(page_title="Withinday Analysis Suite", layout="wide")
+# 1. This must be the VERY FIRST line of code
+st.set_page_config(
+    page_title="Withinday Trading Suite",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
-st.title("☀️ Withinday Trading & Analysis")
-st.write("Welcome! Use the sidebar on the left to navigate between tools.")
+# 2. Main Page Content
+st.title("📈 Withinday Trading Dashboard")
+st.write("Welcome to the unified trading suite. Please select a tool from the sidebar to begin.")
 
-st.info("""
-- **Tool 1:** Consecrutum_with_Niftyatm.py Brief description of what this does.
-- **Tool 2:** N_pct_op_graph.py Brief description.
-- **Tool 3:** BN_pct_op_graph.py Brief description.
+# 3. Quick descriptions of your tools
+st.markdown("""
+### Available Tools:
+1. **Nifty ATM Analysis** (Consecrutum_with_Niftyatm.py)
+2. **Bank Nifty Percent Change** (BN_pct_op_graph.py)
+3. **Nifty Percent Change** (N_pct_op_graph.py)
 """)
+
+st.info("👈 Use the sidebar on the left to navigate between these tools.")
