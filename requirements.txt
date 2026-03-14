@@ -1,5 +1,8 @@
-streamlit
-pandas
+streamlit>=1.30.0
 yfinance
+pandas
+numpy
+matplotlib
 plotly
-pandas_ta
+requests
+pytz
