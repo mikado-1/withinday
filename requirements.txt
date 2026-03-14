@@ -1,8 +1,8 @@
-streamlit>=1.30.0
-yfinance
+streamlit
 pandas
 numpy
-matplotlib
-plotly
 requests
+plotly
+scikit-learn
 pytz
+yfinance
