@@ -92,8 +92,8 @@ def run_strategy(expiry_val):
         if df_ce is not None and df_pe is not None:
             fig_opt = go.Figure()
             fig_opt.add_hline(y=0, line_dash="dash", line_color="gray", opacity=0.5)
-            fig_opt.add_trace(go.Scatter(x=df_ce["time"], y=df_ce["normalized"], name="CE", line=dict(color='#4c4ccf', width=2)))
-            fig_opt.add_trace(go.Scatter(x=df_pe["time"], y=df_pe["normalized"], name="PE", line=dict(color='#00bfff', width=2)))
+            fig_opt.add_trace(go.Scatter(x=df_ce["time"], y=df_pe["normalized"], name="CE", line=dict(color='#4c4ccf', width=2)))
+            fig_opt.add_trace(go.Scatter(x=df_pe["time"], y=df_ce["normalized"], name="PE", line=dict(color='#00bfff', width=2)))
             fig_opt.update_layout(
                 height=300, 
                 margin=dict(l=10, r=10, t=10, b=10), 
