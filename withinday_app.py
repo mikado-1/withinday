@@ -17,6 +17,7 @@ st.markdown("""
 1. **Nifty ATM Analysis** (Consecrutum_with_Niftyatm.py)
 2. **Bank Nifty Percent Change** (BN_pct_op_graph.py)
 3. **Nifty Percent Change** (N_pct_op_graph.py)
+4. **pnl** (pnl.py)
 """)
 
 st.info("👈 Use the sidebar on the left to navigate between these tools.")
