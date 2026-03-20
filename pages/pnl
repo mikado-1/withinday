@@ -1,0 +1,54 @@
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+
+def backtest_logic(df):
+    """
+    Tracks unrealized (floating) PnL while avoiding immediate Stop Loss triggers.
+    """
+    df['vwap'] = df['close'].expanding().mean()
+    day_open = df['open'].iloc[0]
+    l_trig, s_trig = day_open * 1.25, day_open * 0.75
+    
+    pos, entry_done, entry_price, sl_price = 0, False, 0, 0
+    df['floating_pnl'] = 0.0
+    df['signal'] = ""
+    
+    current_realized_pnl = 0.0
+    
+    for i in range(len(df)):
+        idx, row = df.index[i], df.iloc[i]
+        
+        # 1. Entry Logic
+        if not entry_done:
+            if row['high'] >= l_trig:
+                pos, entry_done, entry_price = 1, True, l_trig
+                sl_price = df['low'].iloc[:i].min() if i > 0 else row['low']
+                df.at[idx, 'signal'] = "LONG ENTRY"
+            elif row['low'] <= s_trig:
+                pos, entry_done, entry_price = -1, True, s_trig
+                sl_price = df['high'].iloc[:i].max() if i > 0 else row['high']
+                df.at[idx, 'signal'] = "SHORT ENTRY"
+        
+        # 2. Position Management & PnL
+        if pos == 1: # Active Long
+            df.at[idx, 'floating_pnl'] = current_realized_pnl + (row['close'] - entry_price)
+            # Skip checking SL on the same bar as entry to prevent immediate flicker exit
+            if i > 0 and row['low'] <= sl_price:
+                current_realized_pnl += (sl_price - entry_price)
+                df.at[idx, 'floating_pnl'], df.at[idx, 'signal'], pos = current_realized_pnl, "EXIT (SL)", 0
+        elif pos == -1: # Active Short
+            df.at[idx, 'floating_pnl'] = current_realized_pnl + (entry_price - row['close'])
+            if i > 0 and row['high'] >= sl_price:
+                current_realized_pnl += (entry_price - sl_price)
+                df.at[idx, 'floating_pnl'], df.at[idx, 'signal'], pos = current_realized_pnl, "EXIT (SL)", 0
+        else:
+            df.at[idx, 'floating_pnl'] = current_realized_pnl
+            
+    return df, day_open, l_trig, s_trig
+
+def plot_dashboard(res_df, title, open_p, l_trig, s_trig):
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 8), sharex=True, gridspec_kw={'height_ratios': [3, 1]})
+    # Plotting Price and VWAP...
+    # (Same as previous plotting code)
+    return fig
