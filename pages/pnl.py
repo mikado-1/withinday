@@ -4,6 +4,7 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 import pytz
+from datetime import datetime
 
 # --- 1. CONFIG ---
 st.set_page_config(page_title="Alpha Pod Dashboard", layout="wide")
@@ -22,28 +23,40 @@ def run_integrated_analysis():
 
     for i, TICKER in enumerate(TICKERS):
         t_name = TICKER.replace("^", "")
+        # Fetch 1m data for today
         df = yf.download(TICKER, period="7d", interval="1m", auto_adjust=True, progress=False)
-        daily = yf.download(TICKER, period="1mo", interval="1d", auto_adjust=True, progress=False)
+        # Fetch Daily data for levels
+        daily_full = yf.download(TICKER, period="1mo", interval="1d", auto_adjust=True, progress=False)
 
-        if df.empty or daily.empty: continue
+        if df.empty or daily_full.empty: continue
         if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
-        
+        if isinstance(daily_full.columns, pd.MultiIndex): daily_full.columns = daily_full.columns.get_level_values(0)
+
         df.index = df.index.tz_convert('Asia/Kolkata')
-        df_today = df[df.index.date == df.index.date[-1]].copy()
-        if df_today.empty: continue
+        today_date = df.index.date[-1]
+        df_today = df[df.index.date == today_date].copy()
         
+        # --- LOGIC FIX: PREVIOUS DAY LEVELS ---
+        # Ensure we only look at days BEFORE today to avoid live-candle contamination
+        completed_days = daily_full[daily_full.index.date < today_date]
+        if completed_days.empty: continue
+        
+        prev_day_data = completed_days.iloc[-1]
+        prev_hi = float(prev_day_data['High'])
+        prev_lo = float(prev_day_data['Low'])
+        prev_close = float(prev_day_data['Close'])
+
+        # Current Price Metrics
         ltp = float(df_today['Close'].iloc[-1])
         day_open = float(df_today['Open'].iloc[0])
-        prev_hi = float(daily['High'].iloc[-2])
-        prev_lo = float(daily['Low'].iloc[-2])
-        prev_close = float(daily['Close'].iloc[-2])
 
-        # Sigma & VWAP
-        vol = float(daily['Close'].pct_change().tail(WINDOW).std())
+        # Sigma Levels
+        vol = float(completed_days['Close'].pct_change().tail(WINDOW).std())
         ub = float(max(day_open, prev_close) * (1 + BAND_MULT * vol))
         lb = float(min(day_open, prev_close) * (1 - BAND_MULT * vol))
         df_today['vwap'] = (df_today['Close'] * df_today['Volume'].replace(0,1)).cumsum() / df_today['Volume'].replace(0,1).cumsum()
 
+        # Vectorized Scan
         close_vals = df_today['Close'].values
         high_vals = df_today['High'].values
         low_vals = df_today['Low'].values
@@ -61,7 +74,7 @@ def run_integrated_analysis():
             idx = np.where(s_sell)[0][0]
             add_trade(t_name, "SIGMA", "SELL", df_today.iloc[idx], ub, lb, "NORMAL", df_today, ltp)
 
-        # --- POD 2: REVERSAL (The "Trap" Fix) ---
+        # --- POD 2: REVERSAL (Trap) ---
         if t_name != "INDIAVIX":
             r_buy_mask = (day_open < prev_hi) & (high_vals >= prev_hi)
             r_sell_mask = (day_open > prev_lo) & (low_vals <= prev_lo)
@@ -75,18 +88,19 @@ def run_integrated_analysis():
                 marker = "💎 ULTRA" if sigma_hit == "SELL" else "NORMAL"
                 add_trade(t_name, "REVERSAL", "SELL", df_today.iloc[idx], ub, lb, marker, df_today, ltp, sl_ovr=day_open, trig_pt=prev_lo)
 
-        # --- POD 3: GAP ---
+        # --- POD 3: GAP (The Pure Gap) ---
         if t_name != "INDIAVIX":
+            # Must open outside and stay outside
             if day_open > prev_hi:
-                add_trade(t_name, "GAP", "BUY", df_today.iloc[0], ub, lb, "NORMAL", df_today, ltp, sl_ovr=prev_lo)
+                add_trade(t_name, "GAP", "BUY", df_today.iloc[0], ub, lb, "NORMAL", df_today, ltp, sl_ovr=prev_lo, trig_pt=prev_hi)
             elif day_open < prev_lo:
-                add_trade(t_name, "GAP", "SELL", df_today.iloc[0], ub, lb, "NORMAL", df_today, ltp, sl_ovr=prev_hi)
+                add_trade(t_name, "GAP", "SELL", df_today.iloc[0], ub, lb, "NORMAL", df_today, ltp, sl_ovr=prev_hi, trig_pt=prev_lo)
 
         with cols[i]:
             st.metric(t_name, f"{ltp:.2f}")
             fig = go.Figure(go.Scatter(x=df_today.index, y=df_today['Close'], name="Price", line=dict(color='black')))
-            fig.add_hline(y=ub, line_color="green", line_dash="dot")
-            fig.add_hline(y=lb, line_color="red", line_dash="dot")
+            fig.add_hline(y=prev_hi, line_color="orange", line_dash="dash", annotation_text="Prev Hi")
+            fig.add_hline(y=prev_lo, line_color="orange", line_dash="dash", annotation_text="Prev Lo")
             fig.update_layout(height=180, margin=dict(l=0,r=0,t=10,b=10), template="plotly_white")
             st.plotly_chart(fig, use_container_width=True)
 
@@ -96,13 +110,11 @@ def add_trade(ticker, pod, side, row, ub, lb, marker, df_today, ltp, sl_ovr=None
     entry = float(row['Close'])
     sl = float(sl_ovr) if sl_ovr else (lb if side == "BUY" else ub)
     
-    # Target Logic (Capped at 0.6% for achievable status)
     risk = abs(entry - sl)
     capped_risk = min(risk, entry * 0.006)
     mult = 1 if side == "BUY" else -1
     t1, t2, t3 = entry + (capped_risk * 1.5 * mult), entry + (capped_risk * 2.5 * mult), entry + (capped_risk * 4.0 * mult)
     
-    # Session Analysis for Status
     df_after = df_today[df_today.index >= row.name]
     h_since, l_since = df_after['High'].max(), df_after['Low'].min()
 
@@ -124,14 +136,14 @@ def add_trade(ticker, pod, side, row, ub, lb, marker, df_today, ltp, sl_ovr=None
 
     st.session_state.active_trades.append({
         "Ticker": ticker, "Pod": pod, "Side": side, "Marker": marker,
-        "Trigger Pt": round(trig_pt, 2) if trig_pt else "Open/Sigma",
+        "Trigger Pt": round(trig_pt, 2) if trig_pt else "Range Edge",
         "Entry": round(entry, 2), "SL": round(sl, 2),
         "T1": round(t1, 2), "T2": round(t2, 2), "T3": round(t3, 2),
         "Status": status, "Live PnL": round(pnl_val, 2)
     })
 
-# --- 3. UI ---
-if st.sidebar.button("🚀 Run Full Scan"):
+# --- UI ---
+if st.sidebar.button("🚀 Run Scan"):
     run_integrated_analysis()
 
 if st.session_state.active_trades:
@@ -139,12 +151,4 @@ if st.session_state.active_trades:
     st.divider()
     total_pnl = df_res['Live PnL'].sum()
     st.metric("Total Strategy P&L (Points)", f"{total_pnl:,.2f}", delta=f"{total_pnl:,.2f}")
-    
-    # Full Table with T1, T2, T3, SL
-    st.subheader("🏢 Comprehensive Pod Tracker")
-    st.dataframe(df_res.style.applymap(
-        lambda x: 'background-color: #ff4b4b; color: white' if 'SL' in str(x) else 'background-color: #09ab3b; color: white' if 'HIT' in str(x) else '', 
-        subset=['Status']
-    ).format(precision=2))
-else:
-    st.info("No trades found. Run scan to refresh.")
+    st.dataframe(df_res.style.applymap(lambda x: 'background-color: #ff4b4b; color: white' if 'SL' in str(x) else 'background-color: #09ab3b; color: white' if 'HIT' in str(x) else '', subset=['Status']).format(precision=2))
