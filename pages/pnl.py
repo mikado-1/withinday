@@ -3,74 +3,21 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
-import requests
-import os
 import pytz
-from datetime import datetime
 
-# --- 1. CONFIG & SESSION STATE ---
-st.set_page_config(page_title="Concretum & Triple-Pod Hub", layout="wide")
-
+# --- 1. CONFIG ---
+st.set_page_config(page_title="Alpha Pod Dashboard", layout="wide")
 TICKERS = ["^INDIAVIX", "^NSEI", "^NSEBANK"]
 IST = pytz.timezone('Asia/Kolkata')
 BAND_MULT = 1.0
 WINDOW = 14
 
-# Initialize tracking in session state
 if 'active_trades' not in st.session_state:
     st.session_state.active_trades = []
 
-# NSE API Headers
-NSE_HEADERS = {
-    "User-Agent": "Mozilla/5.0",
-    "Accept": "application/json",
-    "Referer": "https://www.nseindia.com/"
-}
-
-# --- 2. HELPERS ---
-def get_session():
-    session = requests.Session()
-    try: session.get("https://www.nseindia.com/", headers=NSE_HEADERS, timeout=5)
-    except: pass
-    return session
-
-def get_nifty_open(session):
-    try:
-        res = session.get("https://www.nseindia.com/api/allIndices", headers=NSE_HEADERS, timeout=5)
-        if res.status_code == 200:
-            for index in res.json().get('data', []):
-                if index['index'] == "NIFTY 50":
-                    val = index['open']
-                    return float(val.replace(',', '')) if isinstance(val, str) else float(val)
-    except: return None
-
-def record_pod_trade(ticker, pod, side, entry, sl, is_ultra=False):
-    risk = abs(entry - sl)
-    marker = "💎 ULTRA" if is_ultra else "NORMAL"
-    st.session_state.active_trades.append({
-        "Ticker": ticker, "Pod": pod, "Side": side, "Marker": marker,
-        "Entry": round(entry, 2), "SL": round(sl, 2),
-        "T1": round(entry + (risk*1.5) if side=="BUY" else entry - (risk*1.5), 2),
-        "PnL": round(risk * 1.1, 2) # Simulated PnL based on volatility
-    })
-
-# --- 3. MAIN INTEGRATED STRATEGY ---
-def run_integrated_analysis(expiry_val):
-    st.session_state.active_trades = [] # Reset for fresh scan
-    session = get_session()
-    
-    # PART A: ATM OPTION CROSSOVER
-    st.write("### ⚖️ Nifty ATM Option Crossover")
-    nifty_open = get_nifty_open(session)
-    if nifty_open:
-        atm = int(round(nifty_open / 50) * 50)
-        st.caption(f"Nifty Open: {nifty_open} | Fixed ATM: {atm}")
-        # (Option plotting code would go here - keeping focus on the Pods)
-
-    st.divider()
-    
-    # PART B: TRIPLE-POD ENGINE
-    st.write("### 📈 Index Strategy Analysis")
+# --- 2. CORE ENGINE ---
+def run_integrated_analysis():
+    st.session_state.active_trades = [] 
     cols = st.columns(3)
 
     for i, TICKER in enumerate(TICKERS):
@@ -80,9 +27,9 @@ def run_integrated_analysis(expiry_val):
 
         if df.empty or daily.empty: continue
         df.index = df.index.tz_convert('Asia/Kolkata')
-        
-        # Scalar Extraction (Fixes ValueError)
         df_today = df[df.index.date == df.index.date[-1]].copy()
+        
+        # Scalar Levels
         ltp = float(df_today['Close'].iloc[-1])
         day_open = float(df_today['Open'].iloc[0])
         prev_hi = float(daily['High'].iloc[-2])
@@ -93,59 +40,84 @@ def run_integrated_analysis(expiry_val):
         vol = float(daily['Close'].pct_change().tail(WINDOW).std())
         ub = max(day_open, prev_close) * (1 + BAND_MULT * vol)
         lb = min(day_open, prev_close) * (1 - BAND_MULT * vol)
-        vwap = (df_today['Close'] * df_today['Volume'].replace(0,1)).cumsum() / df_today['Volume'].replace(0,1).cumsum()
-        curr_vwap = float(vwap.iloc[-1])
+        df_today['vwap'] = (df_today['Close'] * df_today['Volume'].replace(0,1)).cumsum() / df_today['Volume'].replace(0,1).cumsum()
 
-        # FLAGS
-        sig_buy = (ltp > ub and ltp > curr_vwap)
-        sig_sell = (ltp < lb and ltp < curr_vwap)
+        # --- POD TRIGGERS ---
+        # Find first minute where price crossed the Sigma Band + VWAP
+        s_buy_df = df_today[(df_today['Close'] > ub) & (df_today['Close'] > df_today['vwap'])]
+        s_sell_df = df_today[(df_today['Close'] < lb) & (df_today['Close'] < df_today['vwap'])]
+        sigma_hit = "BUY" if not s_buy_df.empty else "SELL" if not s_sell_df.empty else None
 
-        # POD 1: GAP (Trend)
+        # 1. SIGMA POD
+        if sigma_hit == "BUY":
+            add_trade(t_name, "SIGMA", "BUY", s_buy_df.iloc[0], ub, lb, "NORMAL", df_today, s_buy_df.index[0])
+        elif sigma_hit == "SELL":
+            add_trade(t_name, "SIGMA", "SELL", s_sell_df.iloc[0], ub, lb, "NORMAL", df_today, s_sell_df.index[0])
+
+        # 2. REVERSAL POD
         if t_name != "INDIAVIX":
-            if day_open > prev_hi and ltp > prev_hi:
-                record_pod_trade(t_name, "GAP", "BUY", ltp, prev_lo)
-            elif day_open < prev_lo and ltp < prev_lo:
-                record_pod_trade(t_name, "GAP", "SELL", ltp, prev_hi)
+            r_buy_df = df_today[(day_open < prev_hi) & (df_today['Close'] > prev_hi) & (df_today['Close'] > day_open)]
+            r_sell_df = df_today[(day_open > prev_lo) & (df_today['Close'] < prev_lo) & (df_today['Close'] < day_open)]
+            
+            if not r_buy_df.empty:
+                marker = "💎 ULTRA" if sigma_hit == "BUY" else "NORMAL"
+                add_trade(t_name, "REVERSAL", "BUY", r_buy_df.iloc[0], ub, lb, marker, df_today, r_buy_df.index[0], sl_override=day_open)
+            elif not r_sell_df.empty:
+                marker = "💎 ULTRA" if sigma_hit == "SELL" else "NORMAL"
+                add_trade(t_name, "REVERSAL", "SELL", r_sell_df.iloc[0], ub, lb, marker, df_today, r_sell_df.index[0], sl_override=day_open)
 
-        # POD 2: SIGMA (Vol)
-        if sig_buy: record_pod_trade(t_name, "SIGMA", "BUY", ltp, lb)
-        elif sig_sell: record_pod_trade(t_name, "SIGMA", "SELL", ltp, ub)
-
-        # POD 3: REVERSAL (Squeeze)
-        if t_name != "INDIAVIX":
-            if day_open < prev_hi and ltp > day_open and ltp > prev_hi:
-                record_pod_trade(t_name, "REVERSAL", "BUY", ltp, day_open, is_ultra=sig_buy)
-            elif day_open > prev_lo and ltp < day_open and ltp < prev_lo:
-                record_pod_trade(t_name, "REVERSAL", "SELL", ltp, day_open, is_ultra=sig_sell)
-
-        # Plotting
         with cols[i]:
-            st.metric(f"{t_name}", f"{ltp:.2f}")
-            fig = go.Figure()
-            fig.add_trace(go.Scatter(x=df_today.index, y=df_today['Close'], name="Price", line=dict(color='black')))
+            st.metric(t_name, f"{ltp:.2f}")
+            fig = go.Figure(go.Scatter(x=df_today.index, y=df_today['Close'], name="Price", line=dict(color='black')))
             fig.add_hline(y=ub, line_color="green", line_dash="dot")
             fig.add_hline(y=lb, line_color="red", line_dash="dot")
-            fig.update_layout(height=250, margin=dict(l=0,r=0,t=20,b=0), template="plotly_white")
+            fig.update_layout(height=200, margin=dict(l=0,r=0,t=20,b=0), template="plotly_white")
             st.plotly_chart(fig, use_container_width=True)
 
-    # PART C: POD TRACKER & PNL GRAPH
-    if st.session_state.active_trades:
-        st.divider()
-        st.subheader("🏢 Live Pod Signal Table")
-        df_pnl = pd.DataFrame(st.session_state.active_trades)
-        st.dataframe(df_pnl.style.applymap(lambda x: 'color: green' if x == "BUY" else 'color: red' if x == "SELL" else '', subset=['Side']))
+def add_trade(ticker, pod, side, trigger_row, ub, lb, marker, df_today, trigger_time, sl_override=None):
+    if any(t['Ticker'] == ticker and t['Pod'] == pod for t in st.session_state.active_trades): return
+    
+    entry = float(trigger_row['Close'])
+    sl = sl_override if sl_override else (lb if side == "BUY" else ub)
+    risk = abs(entry - sl)
+    mult = 1 if side == "BUY" else -1
+    
+    t1, t2, t3 = entry + (risk * 1.5 * mult), entry + (risk * 2.5 * mult), entry + (risk * 4.0 * mult)
+    
+    # Analyze all prices AFTER the trigger time
+    df_after = df_today[df_today.index >= trigger_time]
+    max_reached = df_after['High'].max() if side == "BUY" else df_after['Low'].min()
+    min_reached = df_after['Low'].min() if side == "BUY" else df_after['High'].max()
 
-        st.subheader("📉 Cumulative Strategy P&L")
-        df_pnl['Cum_PnL'] = df_pnl['PnL'].cumsum()
-        fig_pnl = go.Figure()
-        fig_pnl.add_trace(go.Scatter(y=df_pnl['Cum_PnL'], mode='lines+markers', fill='tozeroy', line=dict(color='#17B897', width=3)))
-        fig_pnl.update_layout(height=300, template="plotly_white", yaxis_title="Points")
-        st.plotly_chart(fig_pnl, use_container_width=True)
+    # Determine Status based on session extremes
+    status = "Active"
+    if (side == "BUY" and min_reached <= sl) or (side == "SELL" and min_reached >= sl): status = "❌ SL HIT"
+    elif (side == "BUY" and max_reached >= t3) or (side == "SELL" and max_reached <= t3): status = "💰 T3 HIT"
+    elif (side == "BUY" and max_reached >= t2) or (side == "SELL" and max_reached <= t2): status = "✅ T2 HIT"
+    elif (side == "BUY" and max_reached >= t1) or (side == "SELL" and max_reached <= t1): status = "🎯 T1 HIT"
 
-# --- 4. STREAMLIT UI ---
-st.sidebar.header("Command Center")
-exp = st.sidebar.text_input("Expiry (DD-MM-YYYY)", "17-03-2026")
-if st.sidebar.button("Execute Full Scan"):
-    run_integrated_analysis(exp)
-else:
-    st.info("Click 'Execute Full Scan' to view live Pod signals and P&L.")
+    st.session_state.active_trades.append({
+        "Ticker": ticker, "Pod": pod, "Side": side, "Marker": marker,
+        "Entry": round(entry, 2), "SL": round(sl, 2),
+        "T1": round(t1, 2), "T2": round(t2, 2), "T3": round(t3, 2),
+        "Status": status, "Points": round((df_today['Close'].iloc[-1] - entry) * mult, 2)
+    })
+
+# --- 3. UI ---
+if st.sidebar.button("🔍 Run Session Analysis", on_click=run_integrated_analysis):
+    pass
+
+if st.session_state.active_trades:
+    st.divider()
+    st.subheader("🏢 Session-Wide Target Tracker")
+    df_pnl = pd.DataFrame(st.session_state.active_trades)
+    
+    def style_status(val):
+        color = 'red' if 'SL' in val else 'green' if 'HIT' in val else 'gray'
+        return f'background-color: {color}; color: white; font-weight: bold'
+
+    st.dataframe(df_pnl.style.applymap(style_status, subset=['Status']).format(precision=2))
+
+    st.subheader("📉 Cumulative Session Points")
+    df_pnl['Cum_Points'] = df_pnl['Points'].cumsum()
+    st.plotly_chart(go.Figure(go.Scatter(y=df_pnl['Cum_Points'], fill='tozeroy', line=dict(color='#00CC96'))).update_layout(height=250), use_container_width=True)
