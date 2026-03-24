@@ -17,7 +17,7 @@ if 'active_trades' not in st.session_state:
 
 # --- 2. CORE ENGINE ---
 def run_integrated_analysis():
-    st.session_state.active_trades = [] # Reset for fresh scan
+    st.session_state.active_trades = [] 
     cols = st.columns(3)
 
     for i, TICKER in enumerate(TICKERS):
@@ -44,7 +44,6 @@ def run_integrated_analysis():
         lb = float(min(day_open, prev_close) * (1 - BAND_MULT * vol))
         df_today['vwap'] = (df_today['Close'] * df_today['Volume'].replace(0,1)).cumsum() / df_today['Volume'].replace(0,1).cumsum()
 
-        # Vectorized Masks for Performance
         close_vals = df_today['Close'].values
         vwap_vals = df_today['vwap'].values
         
@@ -69,19 +68,10 @@ def run_integrated_analysis():
             
             if r_buy.any():
                 idx = np.where(r_buy)[0][0]
-                marker = "💎 ULTRA" if sigma_hit == "BUY" else "NORMAL"
-                add_trade(t_name, "REVERSAL", "BUY", df_today.iloc[idx], ub, lb, marker, df_today, ltp, sl_ovr=day_open, trig_pt=prev_hi)
+                add_trade(t_name, "REVERSAL", "BUY", df_today.iloc[idx], ub, lb, "💎 ULTRA" if sigma_hit=="BUY" else "NORMAL", df_today, ltp, sl_ovr=day_open, trig_pt=prev_hi)
             elif r_sell.any():
                 idx = np.where(r_sell)[0][0]
-                marker = "💎 ULTRA" if sigma_hit == "SELL" else "NORMAL"
-                add_trade(t_name, "REVERSAL", "SELL", df_today.iloc[idx], ub, lb, marker, df_today, ltp, sl_ovr=day_open, trig_pt=prev_lo)
-
-        # --- POD 3: GAP ---
-        if t_name != "INDIAVIX":
-            if day_open > prev_hi and ltp > prev_hi:
-                add_trade(t_name, "GAP", "BUY", df_today.iloc[0], ub, lb, "NORMAL", df_today, ltp, sl_ovr=prev_lo)
-            elif day_open < prev_lo and ltp < prev_lo:
-                add_trade(t_name, "GAP", "SELL", df_today.iloc[0], ub, lb, "NORMAL", df_today, ltp, sl_ovr=prev_hi)
+                add_trade(t_name, "REVERSAL", "SELL", df_today.iloc[idx], ub, lb, "💎 ULTRA" if sigma_hit=="SELL" else "NORMAL", df_today, ltp, sl_ovr=day_open, trig_pt=prev_lo)
 
         with cols[i]:
             st.metric(t_name, f"{ltp:.2f}")
@@ -94,18 +84,22 @@ def run_integrated_analysis():
 def add_trade(ticker, pod, side, row, ub, lb, marker, df_today, ltp, sl_ovr=None, trig_pt=None):
     if any(t['Ticker'] == ticker and t['Pod'] == pod for t in st.session_state.active_trades): return
     
+    # Force float to prevent P&L calculation errors
     entry = float(row['Close'])
-    sl = float(sl_ovr) if sl_ovr else (lb if side == "BUY" else ub)
+    sl = float(sl_ovr) if sl_ovr else (float(lb) if side == "BUY" else float(ub))
     
-    # --- TARGET CALC (Capped at 0.6% for achievable status) ---
+    # Target Capping
     risk = abs(entry - sl)
     capped_risk = min(risk, entry * 0.006)
     mult = 1 if side == "BUY" else -1
     t1, t2, t3 = entry + (capped_risk * 1.5 * mult), entry + (capped_risk * 2.5 * mult), entry + (capped_risk * 4.0 * mult)
     
-    # Session Analysis for Status
+    # Session Analysis
     df_after = df_today[df_today.index >= row.name]
     h_since, l_since = df_after['High'].max(), df_after['Low'].min()
+
+    # Fixed P&L Calculation: (Current Price - Entry Price) * Side
+    current_pnl = (float(ltp) - entry) * mult
 
     status = "Active"
     if (side == "BUY" and l_since <= sl) or (side == "SELL" and h_since >= sl): status = "❌ SL HIT"
@@ -115,34 +109,29 @@ def add_trade(ticker, pod, side, row, ub, lb, marker, df_today, ltp, sl_ovr=None
 
     st.session_state.active_trades.append({
         "Ticker": ticker, "Pod": pod, "Side": side, "Marker": marker,
-        "Trigger Point": round(trig_pt, 2) if trig_pt else "Open/Sigma",
+        "Trigger Pt": round(trig_pt, 2) if trig_pt else "Open/Sigma",
         "Entry": round(entry, 2), "SL": round(sl, 2),
         "T1": round(t1, 2), "T2": round(t2, 2), "T3": round(t3, 2),
-        "Status": status, "Live PnL": round((ltp - entry) * mult, 2)
+        "Status": status, "Live PnL": round(current_pnl, 2)
     })
 
-# --- 3. UI LAYOUT ---
+# --- 3. UI ---
 if st.sidebar.button("🚀 Run Full Scan"):
     run_integrated_analysis()
 
 if st.session_state.active_trades:
     df_res = pd.DataFrame(st.session_state.active_trades)
-    
     st.divider()
-    # 1. Total Points Metric
+    
+    # Metrics
     total_pnl = df_res['Live PnL'].sum()
-    st.metric("Total Strategy P&L", f"{total_pnl:,.2f} Points", delta=f"{total_pnl:,.2f}")
+    st.metric("Total Strategy P&L", f"{total_pnl:,.2f} Pts", delta=f"{total_pnl:,.2f}")
 
-    # 2. Main Table
+    # Results Table
     st.subheader("🏢 Comprehensive Pod & Reversal Tracker")
     st.dataframe(df_res.style.applymap(
         lambda x: 'background-color: #ff4b4b; color: white' if 'SL' in str(x) else 'background-color: #09ab3b; color: white' if 'HIT' in str(x) else '', 
         subset=['Status']
     ).format(precision=2))
-
-    # 3. P&L Curve
-    st.subheader("📊 Session Equity Curve")
-    df_res['Cum_PnL'] = df_res['Live PnL'].cumsum()
-    st.plotly_chart(go.Figure(go.Scatter(y=df_res['Cum_PnL'], fill='tozeroy', line=dict(color='#00CC96', width=3))).update_layout(height=250), use_container_width=True)
 else:
-    st.info("No active pod triggers found for this session. Use the sidebar to scan.")
+    st.info("No active pod triggers found. Run scan to check.")
