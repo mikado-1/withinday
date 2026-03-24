@@ -1,137 +1,97 @@
-import streamlit as st
-import yfinance as yf
-import pandas as pd
-import numpy as np
-import requests
-import os
-import pytz
-from datetime import datetime, date
+# --- INITIALIZE SESSION STATE FOR TRACKING ---
+if 'active_trades' not in st.session_state:
+    st.session_state.active_trades = []
 
-# --- CONFIG ---
-st.set_page_config(page_title="Triple-Pod Alpha Engine", layout="wide")
-BASE_PATH = "./Nifty_Data/" 
-TICKERS = ["^INDIAVIX", "^NSEI", "^NSEBANK"]
-IST = pytz.timezone('Asia/Kolkata')
-BAND_MULT = 1.0
-WINDOW = 14
-LOG_FILES = {"GAP": "journal_gap.csv", "SIGMA": "journal_sigma.csv", "REVERSAL": "journal_reversal.csv"}
-
-# --- INITIALIZE SESSION STATE ---
-if 'auto_trades' not in st.session_state:
-    st.session_state.auto_trades = {} 
-if 'trades_completed' not in st.session_state:
-    st.session_state.trades_completed = {t.replace("^", ""): [] for t in TICKERS}
-
-# --- EXECUTION ENGINE ---
-def execute_trade(ticker, side, logic, entry, sl, tsl=None, day_hi=None, day_lo=None, is_confluence=False):
-    trade_id = f"{ticker}_{logic}"
-    risk = max(abs(entry - sl), 20)
+def run_strategy(expiry_val):
+    summary_list = []
+    session = get_session()
     
-    # --- CONVICTION MARKER LOGIC ---
-    conviction = "NORMAL"
-    if logic == "REVERSAL":
-        # Ultra High is a marker if Reversal happens while Sigma is also triggering
-        conviction = "💎 ULTRA HIGH" if is_confluence else "NORMAL"
+    # --- PART 1: ATM OPTION CROSSOVER ---
+    # (Keep your existing ATM Option Crossover code here)
+    st.divider()
 
-    # --- 3-STAGE EXIT TARGETS ---
-    if logic == "GAP":
-        t1, t2 = entry + risk if side=="BUY" else entry - risk, entry + (risk*2) if side=="BUY" else entry - (risk*2)
-        t3_label = "3:20 PM Exit"
-    elif logic == "REVERSAL":
-        t1 = entry + (risk * 1.5) if side == "BUY" else entry - (risk * 1.5)
-        t2 = entry + (risk * 2.5) if side == "BUY" else entry - (risk * 2.5)
-        t3_label = f"Day {'High' if side=='BUY' else 'Low'}"
-    else: # SIGMA
-        t1, t2 = entry + risk if side=="BUY" else entry - risk, entry + (risk * 1.5) if side=="BUY" else entry - (risk * 1.5)
-        t3_label = "3:20 PM Exit"
-
-    st.session_state.auto_trades[trade_id] = {
-        'Ticker': ticker, 'Type': side, 'Logic': logic, 'Marker': conviction,
-        'Entry': round(entry, 2), 'SL': round(sl, 2), 'TSL': round(tsl, 2) if tsl else None,
-        'T1': round(t1, 2), 'T2': round(t2, 2), 'T3_Target': t3_label,
-        'Status': "ACTIVE", 'Time': datetime.now(IST).strftime("%H:%M")
-    }
-    st.session_state.trades_completed[ticker].append(logic)
-
-# --- MAIN STRATEGY LOOP ---
-def run_integrated_strategy():
-    now_ist = datetime.now(IST)
-    trade_window_open = (now_ist.hour >= 10)
-    
-    st.write(f"### 🛡️ Live Triple-Pod Monitor | {now_ist.strftime('%H:%M:%S')}")
+    # --- PART 2: INDEX STRATEGY & PODS ---
+    st.write("### 📈 Index Strategy & Live Pods")
     cols = st.columns(3)
 
     for i, TICKER in enumerate(TICKERS):
         t_name = TICKER.replace("^", "")
-        df = yf.download(TICKER, period="5d", interval="1m", auto_adjust=True, progress=False)
-        daily = yf.download(TICKER, period="1mo", interval="1d", auto_adjust=True, progress=False)
-        if df.empty or daily.empty: continue
-        
-        df.index = df.index.tz_convert('Asia/Kolkata')
-        df_today = df[df.index.date == now_ist.date()].copy()
-        if df_today.empty: continue
+        df = yf.download(TICKER, period="7d", interval="1m", auto_adjust=True, progress=False)
+        daily_data = yf.download(TICKER, period="2y", interval="1d", auto_adjust=True, progress=False)
 
-        # Levels
+        if df.empty or daily_data.empty: continue
+        df.index = df.index.tz_convert('Asia/Kolkata')
+        
+        trade_date_ist = df.index[-1].date()
+        df_today = df[df['day'] == trade_date_ist].copy()
+        
+        # --- LEVELS ---
         ltp = df_today['Close'].iloc[-1]
         day_open = df_today['Open'].iloc[0]
-        day_hi, day_lo = df_today['High'].max(), df_today['Low'].min()
-        prev_hi, prev_lo = daily['High'].iloc[-2], daily['Low'].iloc[-2]
-        prev_close = daily['Close'].iloc[-2]
+        prev_hi = daily_data['High'].iloc[-2]
+        prev_lo = daily_data['Low'].iloc[-2]
+        prev_close = daily_data['Close'].iloc[-2]
         
-        # Sigma Calculation
-        vol = daily['Close'].pct_change().tail(WINDOW).std()
-        ub = max(day_open, prev_close) * (1 + BAND_MULT * vol)
-        lb = min(day_open, prev_close) * (1 - BAND_MULT * vol)
-        vwap = (df_today['Close'] * df_today['Volume'].replace(0,1)).cumsum() / df_today['Volume'].replace(0,1).cumsum()
+        # Sigma Calculation (Using your existing logic)
+        # ub = ..., lb = ... (Ensuring these variables are calculated as per your existing snippet)
         
-        # Sigma Status (For Confluence)
-        sigma_buy = (ltp > ub and ltp > vwap.iloc[-1])
-        sigma_sell = (ltp < lb and ltp < vwap.iloc[-1])
+        # --- POD TRIGGER LOGIC ---
+        new_signal = None
+        
+        # 1. GAP POD (Trend)
+        if t_name != "INDIAVIX":
+            if day_open > prev_hi and ltp > prev_hi: new_signal = ("Gap", "BUY")
+            elif day_open < prev_lo and ltp < prev_lo: new_signal = ("Gap", "SELL")
 
-        # --- POD 1: GAP (9:15+) ---
-        if "GAP" not in st.session_state.trades_completed[t_name] and t_name != "INDIAVIX":
-            if day_open < prev_lo and ltp < day_open and ltp < prev_lo:
-                execute_trade(t_name, "SELL", "GAP", ltp, prev_hi, tsl=day_open)
-            elif day_open > prev_hi and ltp > day_open and ltp > prev_hi:
-                execute_trade(t_name, "BUY", "GAP", ltp, prev_lo, tsl=day_open)
+        # 2. SIGMA POD (Vol)
+        # Using your signal_val logic
+        current_sig = 1 if (ltp > ub and ltp > df_today['vwap'].iloc[-1]) else -1 if (ltp < lb and ltp < df_today['vwap'].iloc[-1]) else 0
+        if current_sig != 0: new_signal = ("Sigma", "BUY" if current_sig == 1 else "SELL")
 
-        # --- POD 2: SIGMA (10:00+) ---
-        if trade_window_open and "SIGMA" not in st.session_state.trades_completed[t_name]:
-            if sigma_buy: execute_trade(t_name, "BUY", "SIGMA", ltp, lb)
-            elif sigma_sell: execute_trade(t_name, "SELL", "SIGMA", ltp, ub)
-
-        # --- POD 3: REVERSAL (10:00+) ---
-        if trade_window_open and "REVERSAL" not in st.session_state.trades_completed[t_name] and t_name != "INDIAVIX":
-            # REVERSAL LONG
+        # 3. REVERSAL POD (Squeeze)
+        if t_name != "INDIAVIX":
             if day_open < prev_hi and ltp > day_open and ltp > prev_hi:
-                execute_trade(t_name, "BUY", "REVERSAL", ltp, day_open, is_confluence=sigma_buy)
-            # REVERSAL SHORT
+                new_signal = ("Reversal", "BUY")
             elif day_open > prev_lo and ltp < day_open and ltp < prev_lo:
-                execute_trade(t_name, "SELL", "REVERSAL", ltp, day_open, is_confluence=sigma_sell)
+                new_signal = ("Reversal", "SELL")
 
-        with cols[i]:
-            st.metric(t_name, f"{ltp:.2f}")
-            st.caption(f"Day Open: {day_open:.0f} | Prev High: {prev_hi:.0f}")
+        # --- SIMULATE TRADE EXECUTION ---
+        if new_signal:
+            pod_type, side = new_signal
+            # Avoid duplicate trades for the same ticker/pod in one session
+            exists = any(t['Ticker'] == t_name and t['Pod'] == pod_type for t in st.session_state.active_trades)
+            if not exists:
+                risk = max(abs(ltp - day_open), 20)
+                marker = "💎 ULTRA" if (pod_type == "Reversal" and current_sig != 0) else "NORMAL"
+                
+                st.session_state.active_trades.append({
+                    'Ticker': t_name, 'Pod': pod_type, 'Side': side, 'Marker': marker,
+                    'Entry': ltp, 'SL': day_open if pod_type == "Reversal" else prev_lo,
+                    'T1': ltp + (risk * 1.5) if side == "BUY" else ltp - (risk * 1.5),
+                    'T2': ltp + (risk * 2.5) if side == "BUY" else ltp - (risk * 2.5),
+                    'LTP': ltp, 'PnL': 0
+                })
 
-# --- DASHBOARD ---
-def show_dashboard():
-    st.divider()
-    st.write("### 📊 Triple-Pod Trade Tracker")
-    tabs = st.tabs(["🚀 Gap Logic", "⚡ Sigma Logic", "🔄 Reversal Logic"])
-    for i, logic in enumerate(["GAP", "SIGMA", "REVERSAL"]):
-        with tabs[i]:
-            pod_trades = [v for k, v in st.session_state.auto_trades.items() if v['Logic'] == logic]
-            if pod_trades:
-                st.dataframe(pd.DataFrame(pod_trades), use_container_width=True)
-            else:
-                st.info(f"No active trades for {logic}.")
+        # ... (Keep your existing Plotting code here) ...
 
-# --- APP UI ---
-if st.sidebar.button("🔍 Run Full Scan"):
-    run_integrated_strategy()
-    show_dashboard()
+    # --- PART 3: LIVE SIGNAL TABLE & PNL ---
+    if st.session_state.active_trades:
+        st.divider()
+        st.write("### 🏢 Live Pod Signal Table")
+        
+        # Update Live PnL before displaying
+        for trade in st.session_state.active_trades:
+            # Simple PnL: (Current Price - Entry) * Direction
+            multiplier = 1 if trade['Side'] == "BUY" else -1
+            trade['PnL'] = (ltp - trade['Entry']) * multiplier
+        
+        active_df = pd.DataFrame(st.session_state.active_trades)
+        st.dataframe(active_df.style.format(precision=2).applymap(lambda x: 'color: green' if str(x).startswith('-') == False and isinstance(x, (int, float)) else 'color: red', subset=['PnL']))
 
-if st.sidebar.button("🔴 Reset System"):
-    st.session_state.auto_trades = {}
-    st.session_state.trades_completed = {t.replace("^", ""): [] for t in TICKERS}
-    st.rerun()
+        # --- PNL GRAPH ---
+        st.write("### 📉 Strategy P&L Curve")
+        pnl_data = [t['PnL'] for t in st.session_state.active_trades]
+        fig_pnl = go.Figure()
+        fig_pnl.add_trace(go.Scatter(y=np.cumsum(pnl_data), mode='lines+markers', name='Cumulative PnL', line=dict(color='royalblue', width=3)))
+        fig_pnl.update_layout(height=300, margin=dict(l=10, r=10, t=10, b=10), template="plotly_white")
+        st.plotly_chart(fig_pnl, use_container_width=True)
