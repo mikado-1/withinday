@@ -78,7 +78,7 @@ if bn_open:
     strikes = [atm_anchor + (i * 100) for i in range(-5, 6)]
     
     with st.sidebar:
-        expiry = st.text_input("Expiry (DD-MM-YYYY)", "19-03-2026")
+        expiry = st.text_input("Expiry (DD-MM-YYYY)", "30-03-2026")
         st.metric("BankNifty Open Anchor", bn_open)
 
     all_results, ce_trend_list, pe_trend_list, scanner_data = {}, [], [], []
