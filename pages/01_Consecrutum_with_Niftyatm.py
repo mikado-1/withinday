@@ -188,7 +188,7 @@ def run_strategy(expiry_val):
 
 # --- STREAMLIT UI ---
 st.sidebar.header("Controls")
-expiry_input = st.sidebar.text_input("Option Expiry (DD-MM-YYYY)", "17-03-2026")
+expiry_input = st.sidebar.text_input("Option Expiry (DD-MM-YYYY)", "30-03-2026")
 if st.sidebar.button("Fetch & Calculate"):
     run_strategy(expiry_input)
 else:
